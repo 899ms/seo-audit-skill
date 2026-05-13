@@ -6,6 +6,11 @@
 
 基于 **Script + LLM 双层架构**：Python 脚本处理确定性检查（HTTP 状态码、XML 解析、字符串匹配），LLM 处理语义判断（关键词意图、内容质量、页面类型推断）。支持 Claude Code、Cursor 及任何兼容 SKILL.md 的 Agent 运行时。
 
+## 最佳实践
+
+1. 运行 `npx skills add JeffLi1993/seo-audit-skill`，然后发起审计，例如：`audit this page: https://example.com`。根据生成的报告（`reports/<hostname>-audit.html`），自行过一遍：哪些问题与你的业务目标相关、哪些可以忽略。
+2. 把报告（或报告中的关键段落）交给 Cursor 或 Claude Code，让 AI 根据报告一项一项协助修复即可。
+
 ---
 
 ## 报告产出

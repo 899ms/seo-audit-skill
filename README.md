@@ -6,6 +6,11 @@ Reusable Agent Skills for single-page SEO auditing. Give it a URL — get a stru
 
 Built on a **Script + LLM two-layer architecture**: Python scripts handle deterministic checks (HTTP status, XML parsing, string matching), while the LLM handles semantic judgment (keyword intent, content quality, page type inference). Works with Claude Code, Cursor, and any agent runtime that supports SKILL.md.
 
+## Best practices
+
+1. Run `npx skills add JeffLi1993/seo-audit-skill`, then audit your page (for example: `audit this page: https://example.com`). Open the report at `reports/<hostname>-audit.html` and review it yourself: keep what matters for your goals, skip what does not.
+2. Share the report (or the key sections) with Cursor or Claude Code and have the assistant work through the findings and fixes item by item.
+
 ---
 
 ## Report Output
@@ -160,6 +165,7 @@ npx skills add JeffLi1993/seo-audit-skill --skill seo-audit-full
 ```
 audit this page: https://example.com
 ```
+
 ---
 
 ## Scripts
