@@ -1,146 +1,151 @@
-# seo-audit-full — Reference Guide
+# seo-audit — Reference Guide
 
-Detailed field definitions, audit modules, scope boundaries, and agent instructions
-for the `seo-audit-full` advanced SEO audit skill.
+This document provides detailed field definitions, audit scope, edge case guidance, and agent instructions for the `seo-audit` basic SEO audit skill.
 
 ---
 
 ## Positioning
 
-`seo-audit-full` is the **advanced tier** — it runs ALL checks from `seo-audit` (basic)
-first, then adds extra modules. Both target a single page.
+`seo-audit` is the **default, lightweight entry point** for SEO auditing. It covers the most essential SEO signals that can be assessed quickly, without requiring source code access, crawl data, or performance tooling.
 
-**Compared to `seo-audit` (basic):**
+**Target audience:**
+- Users doing a first-pass check on a page
+- Clients who want a readable summary, not a technical report
+- Scenarios where only the live URL is available
 
-| Dimension | seo-audit (Basic) | seo-audit-full (Advanced) |
-|-----------|------------------|--------------------------|
-| Scope | Core signals | Basic + extra modules |
-| Technical SEO | robots.txt, sitemap, 404, canonical, HTTPS, hreflang | ★ Same (inherited) |
-| On-page | H1, title, meta desc, canonical, slug, images, word count | ★ Same (inherited) |
-| Schema | JSON-LD extraction + field validation | ★ Same (inherited) |
-| E-E-A-T pages | Trust page existence + reachability | ★ Same (inherited) |
-| Social Tags | Not included (banned) | ★ OG Tags + Twitter Card |
-| E-E-A-T Content | Not included | ★ Experience/Expertise/Authority/Trust scoring (LLM) |
-| Duplicate Content | Not included | ★ Near-duplicate signals (LLM) |
-| Anchor Text | Not included | ★ Internal link anchor text quality (LLM) |
-| Scripts | 4 Python scripts | 4 inherited + 1 own (`check-social.py`) |
-| Report depth | Summary + Priority Actions + Insights | Full findings with effort/impact priority matrix |
+**Not suitable for:**
+- Deep technical audits (use `seo-audit-full`)
+- Multi-page site audits
+- Audits requiring performance tooling, GSC data, crawl logs, or CWV metrics
 
 ---
 
-## Audit Scope — Full Report Modules
+## Script + LLM Division of Responsibility
 
-### Module 1: Technical SEO (inherited from Basic scripts)
+The `check-page.py` script uses a **two-layer design** for H1 keyword analysis:
 
-| Check | Script | Notes |
-|-------|--------|-------|
-| robots.txt | `check-site.py` | RFC 9309 group parsing, Allow directive support |
-| sitemap.xml | `check-site.py` | Tracks robots.txt Sitemap directives |
-| 404 Handling | `check-site.py` | Soft 404 detection |
-| URL Canonicalization | `check-site.py` | HTTP→HTTPS, www, trailing slash, canonical match |
-| i18n / hreflang | LLM check on HTML | BCP 47 codes, reciprocal symmetry, x-default |
+| Layer | Who | What |
+|---|---|---|
+| Layer 1 | Script | Mechanical checks: uniqueness, length, full/partial/no string match |
+| Layer 2 | Agent (LLM) | Semantic judgment: does H1 cover the keyword's search intent? |
 
-### Module 2: On-Page SEO (inherited from Basic scripts)
+**When `h1.llm_review_required == true`:**
+The script found a partial string match (e.g. keyword = "AI computer", H1 = "Best Personal AI").
+It cannot determine if this qualifies as a valid natural variant — that requires language understanding.
+The agent must read `h1.values[0]` + the keyword and judge:
 
-| Check | Script | Notes |
-|-------|--------|-------|
-| Title Tag | `check-page.py` | Length, keyword presence/position |
-| Meta Description | `check-page.py` | Length, keyword, quality |
-| H1 Tag | `check-page.py` | Uniqueness, keyword match |
-| URL Slug | `check-page.py` | Keyword presence, readability |
-| Canonical Tag | `check-page.py` | Self-referencing validation |
-| Image Alt Text | LLM check on HTML | Parse `<img>` tags from static HTML |
-| Word Count | LLM check on HTML | < 100 fail, 100–499 warn, ≥ 500 pass |
-| Keyword Placement | LLM check on HTML | Present in first 100 body words |
-| Heading Structure | LLM check on HTML | H2 count, keyword in H2, H3/H2 ratio |
-| Internal Links | LLM check on HTML | Same-origin `<a>` count (excl. nav/footer) |
-### Module 3: Structured Data (inherited from Basic scripts)
+- Does the H1 semantically cover the keyword's search intent?
+- Would a user searching for this keyword consider this H1 relevant?
+- Is this a natural variant (acceptable) or a keyword gap (needs fix)?
 
-| Check | Script | Notes |
-|-------|--------|-------|
-| Schema (JSON-LD) | `check-schema.py` | @type detection, required/recommended field validation |
+**`keyword_match` field values:**
 
-### Module 4: Social Tags (★ Full-only — scripted)
+| Value | Meaning | LLM action required |
+|---|---|---|
+| `"full"` | Keyword string found verbatim in H1 | None |
+| `"partial"` | At least one keyword word (>3 chars) found | Yes — semantic judgment |
+| `"none"` | No keyword words found | None — flag as missing |
+| `"unverified"` | No `--keyword` passed | None — note as unverified |
 
-| Check | Script | Notes |
-|-------|--------|-------|
-| OG Tags | `check-social.py` | og:title, og:description, og:image, og:type, og:url |
-| Twitter Card | `check-social.py` | twitter:card type, title/desc/image with OG fallback |
+---
 
-**OG Tags status logic:**
-- Pass: og:title + og:description + og:image + og:type all present and valid
-- Warn: og:url missing or og:url/canonical mismatch, or length exceeds limits
-- Fail: og:title or og:image completely missing
+## Audit Scope — What Basic Report Checks
 
-**Twitter Card status logic:**
-- Pass: twitter:card present with valid type, title/desc/image present or OG fallback
-- Warn: missing optional fields with no OG fallback
-- Fail: twitter:card tag completely missing
+### Site-Level Checks
 
-### Module 5: E-E-A-T Trust Pages (inherited from Basic workflow)
+| Check | What to Verify | Pass Condition |
+|-------|---------------|----------------|
+| `sitemap.xml` | Does `{domain}/sitemap.xml` return a valid XML sitemap? | HTTP 200, valid XML, at least one `<url>` entry |
+| `robots.txt` | Does `{domain}/robots.txt` exist? Any obvious blocking rules? | HTTP 200, no `Disallow: /` for Googlebot |
 
-| Page | Required |
-|------|----------|
-| About Us | Yes |
-| Contact | Yes |
-| Privacy Policy | Yes |
-| Terms of Service | Yes |
-| Media / Partners | No — include only if present |
+**How to check:**
+- Attempt to fetch `{url_origin}/sitemap.xml` and `{url_origin}/robots.txt`
+- If the page URL is the only available input, note that site-level checks rely on public accessibility
 
-### Module 6: LLM-Only Advanced Checks (★ Full-only)
+**Edge cases:**
+- Sitemap may be referenced in `robots.txt` under `Sitemap:` directive — check both
+- Some sites use non-standard paths (e.g. `/sitemap_index.xml`) — note this as a finding if the default path fails
+- If robots.txt is inaccessible (non-200), flag as a moderate issue
 
-These checks require semantic judgment and cannot be scripted:
+---
 
-| Check | What to assess |
-|-------|---------------|
-| E-E-A-T Content Quality | Experience signals, expertise depth, authority indicators, trust markers |
-| Duplicate Content Signals | Near-duplicate paragraphs, boilerplate ratio, unique content percentage |
-| Anchor Text Quality | Are internal link anchors descriptive and keyword-relevant? |
+### Page-Level Checks
+
+| Check | What to Verify | Pass Condition |
+|-------|---------------|----------------|
+| H1 uniqueness | Is there exactly one `<h1>` on the page? | Exactly 1 H1 tag present |
+| H1 content | Does the H1 reflect the page's primary topic? | H1 is descriptive and keyword-relevant |
+| Title tag | Is `<title>` present, non-empty, and within 50–60 characters? | Present, 50–60 chars recommended |
+| Meta description | Is `<meta name="description">` present and within 120–160 characters? | Present, 120–160 chars recommended |
+| Canonical tag | Is `<link rel="canonical">` present and pointing to the correct URL? | Present, self-referencing or correct canonical |
+
+> **Basic audit scope note:** The above checks represent the current basic audit scope.
+> Additional checks (performance metrics, Core Web Vitals, social tags, etc.) are out of scope for this skill — use `seo-audit-full`.
+
+---
+
+## Trigger Keywords
+
+This skill should activate when the user says (among others):
+
+- "audit this page"
+- "check my SEO"
+- "quick SEO check"
+- "analyze this URL"
+- "what SEO issues does this page have"
+- "SEO report" (without specifying depth)
+- "page audit"
+- "check my meta tags"
 
 ---
 
 ## Agent Instructions
 
-### General quality rules
+### Output quality rules
 
-1. **Concrete over abstract.** "og:title is 112 chars, exceeding the 95-char limit" > "og:title is too long."
-2. **Proportional depth.** More detail for high-impact issues.
-3. **No false certainty.** Mark assumptions with `[ASSUMPTION]` or `[UNVERIFIED]`.
-4. **Priority matrix.** Include effort/impact tags: `Low Effort / High Impact`, etc.
+1. **Be specific.** Never say "the title tag could be improved." Say: "The title tag is 82 characters, exceeding the recommended 60-character limit. Truncation in SERPs may reduce click-through rates."
+2. **Evidence first.** Always ground findings in observable evidence before stating impact.
+3. **Mark assumptions clearly.** If you cannot verify a check due to missing data, write: `[ASSUMPTION]` or `[UNVERIFIED]` next to the finding.
 
 ### Handling missing data
 
-If API keys are not available:
-> "GSC data is not available — search performance analysis is not included in this audit.
-> To enable: set `GSC_API_KEY` environment variable."
+If source HTML is unavailable:
+> "On-page checks are based on rendered page content only. Results may differ if the page relies on JavaScript rendering or server-side logic not visible in the public response."
 
-If CWV data is not supplied:
-> "Core Web Vitals data is not available — this report does not include field performance measurements."
+If site-level checks fail due to access restrictions:
+> "Site-level checks (sitemap, robots.txt) could not be completed. The domain may restrict public access to these files, or a firewall/CDN may be blocking automated requests."
+
+### Scope escalation — when to recommend seo-audit-full
+
+Suggest upgrading to `seo-audit-full` when:
+
+- More than 3 issues are found that require deeper investigation
+- User mentions: performance metrics, Core Web Vitals, competitor comparison, content strategy, crawl budget
+- The page has unusual technical setup (SPA, heavy JavaScript rendering, paywalled content)
+- User asks: "is that everything?" or "what else should I check?"
 
 ---
 
 ## Finding Format Reminder
 
+Every important finding must be structured as:
+
 ```
 **Finding: [Title]**
-- **Evidence:** [Observable fact, data point, or marked assumption]
-- **Impact:** [SEO / UX consequence]
-- **Fix:** [Actionable recommendation with example]
+- **Evidence:** ...
+- **Impact:** ...
+- **Fix:** ...
 ```
 
-For Priority Actions:
+If evidence is not available, write:
 ```
-1. [High Impact / Low Effort] Fix og:image — social shares currently show no preview.
+- **Evidence:** [UNVERIFIED] Unable to confirm — [reason]. Assumption: [what is assumed].
 ```
 
 ---
 
 ## Limitations Disclosure
 
-Always include a limitations section:
+Always include a limitations section in the final report. Use language like:
 
-> This audit is based on publicly accessible page signals at the time of analysis.
-> Depending on data availability, the following may not be included: source code review,
-> JavaScript rendering analysis, Core Web Vitals field measurements, Google Search Console
-> data, crawl log analysis, or competitive benchmarking. All findings marked [UNVERIFIED]
-> or [ASSUMPTION] indicate areas where additional data collection is recommended.
+> This audit is based on publicly accessible page signals at the time of analysis. It does not include: source code review, JavaScript rendering audit, performance metrics, Core Web Vitals metrics, Google Search Console data, crawl log analysis, or competitive benchmarking. For a full audit, use `seo-audit-full`.
