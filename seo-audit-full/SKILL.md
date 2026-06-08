@@ -193,6 +193,40 @@ Full-only:
 Core checks:
 - About Us · Contact · Privacy Policy · Terms of Service · Media/Partners (only if present)
 
+Contact logic (Contact row only):
+- A dedicated `/contact` page is **not required**
+- **Pass** if contact is reachable via any of: dedicated contact page (HTTP 200) · About page with contact details · footer/nav mailto, email, social links, or contact form
+- **Fail** only when no contact pathway exists anywhere on the site
+- Missing `/contact` alone is **not** a fail when About or footer/nav already expose contact info
+
+E-E-A-T infrastructure rules — two layers per trust page:
+- **Layer 1 — Exists:** HTTP 200 for the trust page URL (Contact uses Contact-specific rules above)
+- **Layer 2 — Reachable:** linked from footer or main nav
+
+| Page | Required |
+|---|---|
+| About Us | Yes |
+| Contact | Yes — dedicated page optional; About or footer/nav contact details satisfy this |
+| Privacy Policy | Yes |
+| Terms of Service | Yes |
+| Media / Partners | No — include only if present |
+
+Status rules (About, Privacy, Terms, Media/Partners):
+- Page missing (non-200) → **Fail**
+- Page exists but not linked in footer/nav → **Warn**
+- Page exists and linked in footer/nav → **Pass**
+- Optional page missing → skip, do not include row
+
+**Contact-specific rules:**
+1. Try common paths (`/contact`, `/contact-us`) — HTTP 200 counts as Exists
+2. If no contact page, check the About page body for email, social, or contact details
+3. Also scan homepage footer and nav for `mailto:`, visible email, social links, or a contact form
+4. **Exists Pass** if any contact pathway is found
+5. **Exists Fail** only when no contact information is found anywhere
+6. **Reachable Pass** if a contact page link or contact details appear in footer/nav
+7. **Reachable Warn** if contact is only reachable inside About page content, not directly in footer/nav
+8. Do not recommend creating `/contact` when About or footer already expose contact info
+
 ### Page-Level Checks (in `{{page_checks_html}}`), output in this exact order:
 
 Core checks:

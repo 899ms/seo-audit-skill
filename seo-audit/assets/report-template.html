@@ -576,6 +576,11 @@
         Required: About Us, Contact, Privacy Policy, Terms of Service
         Optional bonus: Media/Partners, Pricing (missing = N/A, not penalized)
 
+        Contact row exception — dedicated /contact page is NOT required:
+          Pass if contact is reachable via dedicated page, About page contact details,
+          or footer/nav mailto, email, social links, or contact form.
+          Fail only when no contact pathway exists anywhere.
+
         <table class="check-table">
           <thead>
             <tr><th>E-E-A-T Page</th><th>Exists</th><th>Reachable (footer/nav)</th><th>Detail</th></tr>
@@ -590,11 +595,8 @@
             <tr>
               <td>Contact</td>
               <td><span class="status status-pass">Pass</span></td>
-              <td><span class="status status-warn">Warning</span></td>
-              <td>
-                <div class="detail-issue">· /contact returns 200 but not linked in footer or nav.</div>
-                <div class="detail-fix">Add to footer — hidden trust pages reduce E-E-A-T signals.</div>
-              </td>
+              <td><span class="status status-pass">Pass</span></td>
+              <td>/contact returns 404 · contact exposed via mailto:team@example.com in footer and About page.</td>
             </tr>
             <tr>
               <td>Privacy Policy</td>

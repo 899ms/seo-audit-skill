@@ -111,6 +111,12 @@ Allowed site-level checks (in `{{site_checks_html}}`):
 Allowed E-E-A-T checks (in `{{eeat_checks_html}}`):
 - About Us · Contact · Privacy Policy · Terms of Service · Media/Partners (only if present)
 
+Contact logic (Contact row only):
+- A dedicated `/contact` page is **not required**
+- **Pass** if contact is reachable via any of: dedicated contact page (HTTP 200) · About page with contact details · footer/nav mailto, email, social links, or contact form
+- **Fail** only when no contact pathway exists anywhere on the site
+- Missing `/contact` alone is **not** a fail when About or footer/nav already expose contact info
+
 Allowed page-level checks (in `{{page_checks_html}}`), output in this exact order:
 URL Slug · Title Tag · Meta Description · H1 Tag · Canonical Tag · Image Alt Text · Word Count · Keyword Placement · Heading Structure · Internal Links · Schema (JSON-LD)
 
@@ -239,16 +245,26 @@ Follow these steps in order:
    | Page | Required |
    |---|---|
    | About Us | Yes |
-   | Contact | Yes |
+   | Contact | Yes — see Contact-specific rules below |
    | Privacy Policy | Yes |
    | Terms of Service | Yes |
    | Media / Partners | No — include only if present |
 
-   Status rules:
+   Status rules (About, Privacy, Terms, Media/Partners):
    - Page missing (non-200) → **Fail**
    - Page exists but not linked in footer/nav → **Warn**
    - Page exists and linked in footer/nav → **Pass**
    - Optional page missing → skip, do not include row
+
+   **Contact-specific rules** — a dedicated `/contact` page is optional:
+   1. Try common paths (`/contact`, `/contact-us`) — HTTP 200 counts as Exists
+   2. If no contact page, check the About page body for email, social, or contact details
+   3. Also scan homepage footer and nav for `mailto:`, visible email, social links, or a contact form
+   4. **Exists Pass** if any contact pathway is found (dedicated page, About, or footer/nav contact details)
+   5. **Exists Fail** only when no contact information is found anywhere
+   6. **Reachable Pass** if a contact page link or contact details appear in footer/nav
+   7. **Reachable Warn** if contact is only reachable inside About page content, not directly in footer/nav
+   8. Do not recommend creating `/contact` when About or footer already expose contact info — note the existing pathway instead
 
 5. **Run `check-page.py --keyword "<inferred_keyword>"`** — parse the JSON output for H1, title,
    meta description, canonical, and URL slug
