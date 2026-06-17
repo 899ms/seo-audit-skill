@@ -353,6 +353,20 @@ def get_pagespeed_metrics(
             "error": str(exc),
         }
 
+    if not api_key:
+        return {
+            "url": target_url,
+            "strategy": strategy,
+            "status": "error",
+            "error": "PageSpeed API key is required for seo-audit-full.",
+            "hint": (
+                "Set PAGESPEED_API_KEY or GOOGLE_PAGESPEED_API_KEY, "
+                "or pass --api-key. Get a key from the official PageSpeed "
+                f"Get Started page: {_GET_API_KEY_URL}"
+            ),
+            "api_key_help_url": _GET_API_KEY_URL,
+        }
+
     strategy = strategy.lower()
     requested_categories = categories or list(_DEFAULT_CATEGORIES)
 
@@ -532,7 +546,7 @@ def main() -> None:
             os.getenv("PAGESPEED_API_KEY")
             or os.getenv("GOOGLE_PAGESPEED_API_KEY")
         ),
-        help="Optional Google PageSpeed API key. Defaults to PAGESPEED_API_KEY or GOOGLE_PAGESPEED_API_KEY env var.",
+        help="Google PageSpeed API key. Required unless PAGESPEED_API_KEY or GOOGLE_PAGESPEED_API_KEY is set.",
     )
     parser.add_argument(
         "--locale",

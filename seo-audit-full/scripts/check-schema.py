@@ -60,9 +60,9 @@ REQUIRED_FIELDS: dict[str, list[str]] = {
 
 # 推荐字段（缺失 → warn）
 RECOMMENDED_FIELDS: dict[str, list[str]] = {
-    "Article": ["dateModified", "publisher"],
-    "BlogPosting": ["dateModified", "publisher"],
-    "NewsArticle": ["dateModified", "publisher"],
+    "Article": ["dateModified", "publisher", "mainEntityOfPage"],
+    "BlogPosting": ["dateModified", "publisher", "mainEntityOfPage"],
+    "NewsArticle": ["dateModified", "publisher", "mainEntityOfPage"],
     "Product": ["aggregateRating", "brand", "description"],
     "Organization": ["sameAs", "contactPoint"],
     "WebSite": ["potentialAction"],
@@ -121,12 +121,29 @@ class _JsonLdExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.blocks: list[str] = []
+        self.html_lang: Optional[str] = None
+        self.canonical_url: Optional[str] = None
+        self.hreflang_urls: dict[str, str] = {}
         self._in_jsonld = False
         self._buf = ""
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        attrs_dict = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "html":
+            lang = attrs_dict.get("lang", "").strip()
+            if lang:
+                self.html_lang = lang
+        elif tag == "link":
+            rel_values = {v.lower() for v in attrs_dict.get("rel", "").split()}
+            href = attrs_dict.get("href", "").strip()
+            if "canonical" in rel_values and href:
+                self.canonical_url = href
+            if "alternate" in rel_values and href:
+                hreflang = attrs_dict.get("hreflang", "").strip()
+                if hreflang:
+                    self.hreflang_urls[hreflang] = href
+
         if tag == "script":
-            attrs_dict = {k.lower(): (v or "") for k, v in attrs}
             if attrs_dict.get("type", "").lower() == "application/ld+json":
                 self._in_jsonld = True
                 self._buf = ""
@@ -146,13 +163,15 @@ class _JsonLdExtractor(HTMLParser):
 # ── Schema helpers ────────────────────────────────────────────────────────────
 
 
-def _flatten_schemas(raw_blocks: list[str]) -> list[dict]:
+def _flatten_schemas(raw_blocks: list[str]) -> tuple[list[dict], list[str]]:
     """Parse JSON-LD blocks and flatten @graph arrays into individual schemas."""
     schemas: list[dict] = []
+    parse_errors: list[str] = []
     for text in raw_blocks:
         try:
             parsed = json.loads(text)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            parse_errors.append(f"Invalid JSON-LD: {exc.msg} at line {exc.lineno}, column {exc.colno}.")
             continue
 
         if isinstance(parsed, list):
@@ -163,7 +182,7 @@ def _flatten_schemas(raw_blocks: list[str]) -> list[dict]:
                 schemas.extend(item for item in graph if isinstance(item, dict))
             else:
                 schemas.append(parsed)
-    return schemas
+    return schemas, parse_errors
 
 
 def _get_types(schema: dict) -> list[str]:
@@ -186,6 +205,44 @@ def _field_present(schema: dict, field: str) -> bool:
     if isinstance(value, list) and len(value) == 0:
         return False
     return True
+
+
+def _normalize_lang(value: Optional[str]) -> Optional[str]:
+    """Normalize language strings for loose matching."""
+    if not value or not isinstance(value, str):
+        return None
+    normalized = value.strip().lower().replace("_", "-")
+    if not normalized:
+        return None
+    return normalized
+
+
+def _lang_matches(page_lang: Optional[str], schema_lang: Optional[str]) -> bool:
+    """Accept exact language-region matches and same primary language matches."""
+    page = _normalize_lang(page_lang)
+    schema = _normalize_lang(schema_lang)
+    if not page or not schema:
+        return False
+    return page == schema or page.split("-")[0] == schema.split("-")[0]
+
+
+def _extract_schema_url(value) -> Optional[str]:
+    """Extract URL values from schema fields that may be strings or objects."""
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        for key in ("@id", "url", "id"):
+            nested = value.get(key)
+            if isinstance(nested, str) and nested.strip():
+                return nested.strip()
+    return None
+
+
+def _urls_equivalent(a: Optional[str], b: Optional[str]) -> bool:
+    """Compare URLs loosely, ignoring trailing slash differences."""
+    if not a or not b:
+        return False
+    return a.rstrip("/") == b.rstrip("/")
 
 
 def _validate_nested(schema: dict, schema_type: str) -> list[str]:
@@ -267,6 +324,85 @@ def _validate_schema(schema: dict) -> dict:
     }
 
 
+def _validate_localized_schema(
+    schemas: list[dict],
+    page_lang: Optional[str],
+    canonical_url: Optional[str],
+    page_url: str,
+    hreflang_urls: dict[str, str],
+) -> dict:
+    """Validate schema language and URL alignment for localized pages."""
+    issues: list[str] = []
+    fixes: list[str] = []
+    multilingual = len([k for k in hreflang_urls if k.lower() != "x-default"]) > 1
+    current_url = canonical_url or page_url
+
+    language_schemas = []
+    url_schemas = []
+    for schema in schemas:
+        schema_lang = schema.get("inLanguage")
+        if isinstance(schema_lang, list):
+            schema_lang = schema_lang[0] if schema_lang else None
+        if isinstance(schema_lang, str) and schema_lang.strip():
+            language_schemas.append(schema_lang.strip())
+
+        for field in ("url", "mainEntityOfPage"):
+            schema_url = _extract_schema_url(schema.get(field))
+            if schema_url:
+                url_schemas.append(schema_url)
+
+    if page_lang and language_schemas:
+        mismatched = [lang for lang in language_schemas if not _lang_matches(page_lang, lang)]
+        if mismatched:
+            issues.append(
+                f"Schema inLanguage ({', '.join(mismatched)}) does not match html lang ({page_lang})."
+            )
+            fixes.append("Set inLanguage to the current page language.")
+    elif multilingual and page_lang:
+        issues.append("Multilingual page lacks schema inLanguage.")
+        fixes.append("Add language-specific inLanguage to each localized JSON-LD block.")
+
+    if current_url and url_schemas:
+        mismatched_urls = [u for u in url_schemas if not _urls_equivalent(u, current_url)]
+        if mismatched_urls and len(mismatched_urls) == len(url_schemas):
+            issues.append(
+                "Schema url/mainEntityOfPage does not point to the current localized page."
+            )
+            fixes.append("Set schema url and mainEntityOfPage to the current canonical URL.")
+    elif multilingual and current_url:
+        issues.append("Multilingual page lacks schema url/mainEntityOfPage.")
+        fixes.append("Add current-language url or mainEntityOfPage to the JSON-LD block.")
+
+    if not issues:
+        detail = (
+            "Localized schema matches page language."
+            if page_lang or multilingual
+            else "No localized schema issue detected."
+        )
+        return {
+            "status": "pass",
+            "page_language": page_lang,
+            "schema_languages": language_schemas,
+            "schema_urls": url_schemas,
+            "multilingual": multilingual,
+            "issues": [],
+            "fixes": [],
+            "detail": detail,
+        }
+
+    status = "fail" if any("does not match" in issue or "does not point" in issue for issue in issues) else "warn"
+    return {
+        "status": status,
+        "page_language": page_lang,
+        "schema_languages": language_schemas,
+        "schema_urls": url_schemas,
+        "multilingual": multilingual,
+        "issues": issues,
+        "fixes": fixes,
+        "detail": " ".join(issues),
+    }
+
+
 def _infer_page_type(url: str) -> str:
     """Heuristic page type guess from URL pattern. LLM should confirm."""
     path = urlparse(url).path.lower().rstrip("/")
@@ -327,41 +463,67 @@ def check_schema(html: str, url: str = "") -> dict:
             "llm_review_required": True,
         }
 
-    all_schemas = _flatten_schemas(extractor.blocks)
+    all_schemas, parse_errors = _flatten_schemas(extractor.blocks)
     if not all_schemas:
+        status = "fail" if parse_errors else "warn"
+        detail = (
+            "JSON-LD script tags found but none contained valid JSON. "
+            + " ".join(parse_errors[:2])
+        )
         return {
             "url": url,
-            "status": "warn",
+            "status": status,
             "schemas": [],
-            "detail": "JSON-LD script tags found but none contained valid JSON.",
+            "parse_errors": parse_errors,
+            "detail": detail,
             "llm_review_required": False,
         }
 
     validated = [_validate_schema(s) for s in all_schemas]
     found_types = list({t for v in validated for t in v["types"][:1] if t})
+    localized = _validate_localized_schema(
+        all_schemas,
+        extractor.html_lang,
+        extractor.canonical_url,
+        url,
+        extractor.hreflang_urls,
+    )
 
     statuses = [v["status"] for v in validated]
+    if parse_errors:
+        statuses.append("fail")
+    if localized["status"] in ("fail", "warn"):
+        statuses.append(localized["status"])
     overall = "fail" if "fail" in statuses else ("warn" if "warn" in statuses else "pass")
 
     has_expected = bool(expected) and any(t in found_types for t in expected)
     has_conflicts = len(found_types) > 2
 
     detail_parts = [f"Found {len(all_schemas)} JSON-LD block(s): {', '.join(found_types)}."]
+    if parse_errors:
+        detail_parts.append("Invalid JSON-LD block(s): " + " ".join(parse_errors[:2]))
     if has_conflicts:
         detail_parts.append(f"Potential type conflict: {found_types}.")
     for v in validated:
         if v["status"] in ("fail", "warn"):
             detail_parts.append(v["detail"])
+    if localized["status"] in ("fail", "warn"):
+        detail_parts.append(localized["detail"])
 
     return {
         "url": url,
         "status": overall,
         "schemas": validated,
+        "parse_errors": parse_errors,
         "found_types": found_types,
         "inferred_page_type": inferred,
         "expected_types": expected,
         "has_expected_type": has_expected,
         "has_type_conflicts": has_conflicts,
+        "page_language": extractor.html_lang,
+        "canonical_url": extractor.canonical_url,
+        "hreflang_urls": extractor.hreflang_urls,
+        "localized_schema": localized,
         "detail": " ".join(detail_parts),
         "llm_review_required": True,
     }

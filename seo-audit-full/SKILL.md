@@ -39,7 +39,7 @@ full public-signal workflow and clearly note missing data sources in the report.
 |-------|----------|-------|
 | Page URL | Yes | The primary page to audit |
 | Primary keyword | Recommended | Improves content relevance scoring |
-| PageSpeed API key | Yes | Ask the user for it at the start; run without it if unavailable |
+| PageSpeed API key | Yes | Required for full audit PageSpeed checks. Ask at the start and do not run PageSpeed without it. |
 | Raw HTML or page content | Optional | Enables more accurate content checks when supplied |
 | GSC / crawl / analytics data | Optional | Include when supplied, otherwise mark unavailable |
 | Competitor benchmark data | Optional | Include when supplied |
@@ -50,9 +50,14 @@ At the start of a full audit, ask the user for a PageSpeed Insights API key:
 For PageSpeed checks, please provide a Google PageSpeed Insights API key.
 Get one here: https://developers.google.com/speed/docs/insights/v5/get-started
 Open "Acquiring and using an API key" → "Get a Key".
-If you do not provide one, I will still run the audit and mark the PageSpeed
-module with instructions for getting a key if the API is quota-limited.
+If you do not provide one, I will stop before running the full audit because
+PageSpeed is a required full-audit module.
 ```
+
+Do not run `seo-audit-full` PageSpeed checks without a PageSpeed API key supplied
+by `--api-key`, `PAGESPEED_API_KEY`, or `GOOGLE_PAGESPEED_API_KEY`. If the key is
+missing, stop and ask the user to configure it instead of rendering a full report
+with missing PageSpeed data.
 
 ---
 
@@ -152,7 +157,7 @@ python scripts/check-schema.py --file /tmp/page.html
 ```bash
 # 5. PageSpeed / Lighthouse checks
 python scripts/check-pagespeed.py https://example.com --strategy mobile --timeout 180 --api-key "USER_PROVIDED_KEY"
-# If no key was provided, run without --api-key and report any quota/API-key error.
+# If no key was provided, do not run this command. Ask the user to configure a PageSpeed API key first.
 
 # 6. Social tags: OG + Twitter Card validation
 python scripts/check-social.py --file /tmp/page.html
@@ -165,8 +170,8 @@ Each script exits with code `0` (all pass/warn) or `1` (any fail/error).
 PageSpeed can take 200 seconds. Use a 180-second timeout by default. If it
 still times out, mark the Page Speed module as `error` and state that the
 PageSpeed API timed out; do not treat that as confirmed page performance failure.
-If PageSpeed fails because no API key was provided or Google returns a quota/API
-key error, keep the audit running and render the PageSpeed module as `error` with
+If PageSpeed fails because Google returns a quota/API-key error after a key was
+provided, keep the audit running and render the PageSpeed module as `error` with
 this instruction:
 `Get a PageSpeed API key at https://developers.google.com/speed/docs/insights/v5/get-started → "Acquiring and using an API key" → "Get a Key".`
 
@@ -179,7 +184,23 @@ Full runs its own core checks plus the full-only items marked ★ below.
 ### Site-Level Checks (in `{{site_checks_html}}`)
 
 Core checks:
-- robots.txt · sitemap.xml · 404 Handling · URL Canonicalization · i18n / hreflang
+- Sitemap URL Inventory · Staging Subdomain Indexation · robots.txt · sitemap.xml · 404 Handling · URL Canonicalization · i18n / hreflang
+
+**Staging Subdomain Indexation rules:**
+- Check common staging/test hosts before robots.txt: `test.`, `staging.`, `dev.`, `preview.`, `beta.`, `uat.`
+- **Fail** when a staging/test subdomain is publicly accessible, closely mirrors the production site, and is not protected by authentication, `noindex`, or a blocking `robots.txt`.
+- **Warn** when a staging/test subdomain is publicly accessible but similarity or index protection cannot be confirmed.
+- **Pass** when no public staging/test subdomain is detected, or detected staging hosts are protected by authentication, non-200 access, `noindex`, or `Disallow: /`.
+- Explain the impact as duplicate indexable pages: Google may treat `test.example.com` and `www.example.com` as separate but near-identical URLs, splitting ranking signals and competing with the production site.
+- Recommended fixes: add Basic Auth/password protection first; also block crawlers on the staging host with `User-agent: *` + `Disallow: /`; add page-level `noindex` if pages can still be accessed.
+
+**Sitemap URL Inventory rules:**
+- Place this as the first module in `{{site_checks_html}}`, before the Crawlability table.
+- Render it as its own table with columns: Directory · URL Count · Page Type · Example Page.
+- Use `check-site.py` `sitemap_inventory` output to summarize first-level directories, URL counts, inferred page types, and one representative example URL.
+- Treat this as a site-level map, not a pass/fail single-page SEO audit.
+- Use status `info` unless sitemap URLs cannot be parsed; do not penalize a site for having many or few URLs in a directory without deeper evidence.
+- Always include a next-step note: the user can continue with deeper full audits by selecting representative sample URLs from major directories such as `/blog/`, `/tools/`, `/alternatives/`, `/templates/`, or `/use-cases/`.
 
 ### Page Speed Checks (in `{{pagespeed_checks_html}}`)
 
@@ -233,6 +254,14 @@ Core checks:
 URL Slug · Title Tag · Meta Description · H1 Tag · Canonical Tag · Image Alt Text ·
 Word Count · Keyword Placement · Heading Structure · Internal Links · Schema (JSON-LD)
 
+**Schema (JSON-LD) rules:**
+- Treat Schema as a quality check, not only a presence check.
+- Validate JSON-LD parseability, expected `@type`, required fields, recommended rich-result fields, nested fields, and primary-type conflicts.
+- **Fail** when JSON-LD is invalid, the expected schema type is missing, required fields are missing, or localized schema clearly points to the wrong language/URL.
+- **Warn** when recommended fields are missing, nested fields are incomplete, multilingual pages lack `inLanguage`, or localized schema cannot be fully confirmed.
+- **Pass** only when the expected schema type is present, required fields are present, no conflicts are found, and localized schema matches the current page language/URL when applicable.
+- For multilingual pages, each language version should have its own schema with matching `inLanguage`, language-specific headline/description where present, and `url` / `mainEntityOfPage` pointing to the current localized canonical URL.
+
 ★ Full-only additions:
 - **OG Tags** — og:title, og:description, og:image, og:type, og:url presence and validity
 - **Twitter Card** — twitter:card type, title/description/image (with OG fallback detection)
@@ -245,6 +274,26 @@ Same rules across full audit modules — map each field's `status` directly to t
 - `status` → `pass` / `warn` / `fail` / `error` → badge in report
 - `detail` → starting point for Evidence line
 - Do not contradict script output unless you have additional observable evidence
+
+**For `check-site.py` output:**
+- `staging_subdomains.status` → Staging Subdomain Indexation row status
+- `staging_subdomains.detail` → Staging Subdomain Indexation row detail
+- `staging_subdomains.public_hosts` → evidence for public staging/test hosts
+- `staging_subdomains.similar_hosts` → fail evidence for production-like staging duplicates
+- `robots.status` → robots.txt row status
+- `sitemap.status` → sitemap.xml row status
+- `sitemap_inventory.status` → Sitemap URL Inventory module status
+- `sitemap_inventory.directories[]` → table rows with `path`, `url_count`, `page_type`, and `example_url`
+- `sitemap_inventory.detail` → short explanatory note below the inventory table
+
+**For `check-schema.py` output:**
+- `status` → Schema (JSON-LD) row status
+- `detail` → Schema (JSON-LD) row detail
+- `parse_errors` → fail evidence for malformed JSON-LD
+- `schemas[].fields_missing` → fail evidence for missing required schema fields
+- `schemas[].recommended_missing` and `schemas[].nested_issues` → warning evidence
+- `localized_schema.status` → language/URL alignment status for multilingual schema
+- `localized_schema.issues` → evidence for schema language or URL mismatch
 
 **For `check-social.py` output:**
 - `og.status` → OG Tags row status
@@ -317,7 +366,7 @@ at least 300x157px. Flag if the image URL looks like a small icon or favicon.
 1. **Acknowledge full scope** — confirm this is a full audit
 2. **Infer primary keyword** — read the page H1, title, and first paragraph unless the user provided one
 3. **Phase 1: Run core scripts** — check-site → check-page → fetch-page → check-schema
-4. **Phase 2: Run full-only scripts** — check-pagespeed → check-social
+4. **Phase 2: Run full-only scripts** — verify PageSpeed API key exists, then run check-pagespeed → check-social
 5. **Core checks** — 404 handling, URL canonicalization, E-E-A-T trust pages, i18n/hreflang
 6. **PageSpeed checks** — summarize Lighthouse category scores and lab metrics
 7. **LLM-only advanced checks** — E-E-A-T content quality, duplicate content signals, anchor text quality

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Site-level SEO checks: robots.txt and sitemap.xml.
+Site-level SEO checks: staging subdomains, robots.txt, and sitemap.xml.
 Outputs structured JSON to stdout so the agent can consume results directly
 without needing to interpret raw HTTP responses or parse formats manually.
 
@@ -11,6 +11,12 @@ Usage:
 Output example (JSON):
     {
       "origin": "https://example.com",
+      "staging_subdomains": {
+        "status": "pass",
+        "checked_hosts": ["test.example.com", "staging.example.com"],
+        "public_hosts": [],
+        "detail": "No public staging/test subdomain detected."
+      },
       "robots": {
         "status": "pass",
         "http_status": 200,
@@ -39,6 +45,7 @@ import re
 import socket
 import sys
 import xml.etree.ElementTree as ET
+from difflib import SequenceMatcher
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -59,6 +66,12 @@ _DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.5",
     "Connection": "keep-alive",
 }
+
+_STAGING_PREFIXES = ("test", "staging", "dev", "preview", "beta", "uat")
+_PROTECTED_STATUS_CODES = {401, 403}
+_PUBLIC_STATUS_CODES = {200}
+_MAX_SITEMAP_CHILDREN = 20
+_MAX_INVENTORY_URLS = 5000
 
 
 def _safe_fetch(url: str, timeout: int) -> tuple[Optional[int], Optional[str], Optional[str]]:
@@ -89,6 +102,37 @@ def _safe_fetch(url: str, timeout: int) -> tuple[Optional[int], Optional[str], O
         return None, None, f"Connection error: {e}"
     except requests.exceptions.RequestException as e:
         return None, None, f"Request failed: {e}"
+
+
+def _safe_fetch_no_redirect(
+    url: str, timeout: int
+) -> tuple[Optional[int], Optional[str], Optional[str], Optional[str]]:
+    """
+    Fetch a URL without following redirects.
+    Returns (status_code, content, error_message, location_header).
+    """
+    parsed = urlparse(url)
+
+    try:
+        hostname = parsed.hostname or ""
+        resolved_ip = socket.gethostbyname(hostname)
+        ip = ipaddress.ip_address(resolved_ip)
+        if ip.is_private or ip.is_loopback or ip.is_reserved:
+            return None, None, f"Blocked: resolves to private IP ({resolved_ip})", None
+    except (socket.gaierror, ValueError):
+        pass
+
+    try:
+        resp = requests.get(url, headers=_DEFAULT_HEADERS, timeout=timeout, allow_redirects=False)
+        return resp.status_code, resp.text, None, resp.headers.get("Location")
+    except requests.exceptions.Timeout:
+        return None, None, f"Timed out after {timeout}s", None
+    except requests.exceptions.SSLError as e:
+        return None, None, f"SSL error: {e}", None
+    except requests.exceptions.ConnectionError as e:
+        return None, None, f"Connection error: {e}", None
+    except requests.exceptions.RequestException as e:
+        return None, None, f"Request failed: {e}", None
 
 
 def _parse_robots_groups(content: str) -> tuple[list[dict], list[str]]:
@@ -159,6 +203,50 @@ def _find_group_for_agent(groups: list[dict], agent: str) -> Optional[dict]:
         if agent_lower in group["agents"]:
             return group
     return None
+
+
+def _html_has_noindex(content: str) -> bool:
+    """Return True when HTML contains a robots noindex directive."""
+    meta_pattern = re.compile(
+        r"<meta[^>]+(?:name|property)=[\"']?(?:robots|googlebot)[\"']?[^>]*>",
+        re.IGNORECASE,
+    )
+    for tag in meta_pattern.findall(content or ""):
+        if "noindex" in tag.lower():
+            return True
+    return False
+
+
+def _extract_visible_text(content: str) -> str:
+    """Normalize visible-ish page text for rough production/staging similarity checks."""
+    text = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", content or "")
+    text = re.sub(r"(?is)<!--.*?-->", " ", text)
+    text = re.sub(r"(?is)<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip().lower()[:12000]
+
+
+def _content_similarity(a: Optional[str], b: Optional[str]) -> Optional[float]:
+    """Return a rough text similarity score between two HTML documents."""
+    if not a or not b:
+        return None
+    text_a = _extract_visible_text(a)
+    text_b = _extract_visible_text(b)
+    if len(text_a) < 200 or len(text_b) < 200:
+        return None
+    return round(SequenceMatcher(None, text_a, text_b).ratio(), 3)
+
+
+def _robots_blocks_all(content: Optional[str]) -> bool:
+    """Check whether robots.txt content blocks all crawlers or Googlebot."""
+    if not content:
+        return False
+    groups, _ = _parse_robots_groups(content)
+    wildcard_group = _find_group_for_agent(groups, "*")
+    googlebot_group = _find_group_for_agent(groups, "googlebot")
+    wildcard_blocked = _group_blocks_all(wildcard_group) if wildcard_group else False
+    googlebot_blocked = _group_blocks_all(googlebot_group) if googlebot_group else wildcard_blocked
+    return wildcard_blocked or googlebot_blocked
 
 
 def check_robots(origin: str, timeout: int) -> dict:
@@ -252,6 +340,24 @@ def check_robots(origin: str, timeout: int) -> dict:
     return result
 
 
+def _local_name(tag: str) -> str:
+    """Return XML tag local name without namespace."""
+    return re.sub(r"\{.*?\}", "", tag).lower()
+
+
+def _extract_sitemap_locs(root: ET.Element, item_tag: str) -> list[str]:
+    """Extract <loc> values from sitemap or url entries."""
+    locs: list[str] = []
+    for item in root:
+        if _local_name(item.tag) != item_tag:
+            continue
+        for child in item:
+            if _local_name(child.tag) == "loc" and child.text:
+                locs.append(child.text.strip())
+                break
+    return locs
+
+
 def _parse_sitemap_xml(content: str, source_url: str) -> dict:
     """Parse and validate a single sitemap XML document."""
     try:
@@ -259,17 +365,17 @@ def _parse_sitemap_xml(content: str, source_url: str) -> dict:
     except ET.ParseError as e:
         return {"status": "fail", "detail": f"Sitemap at {source_url} is not valid XML: {e}"}
 
-    tag = re.sub(r"\{.*?\}", "", root.tag).lower()
+    tag = _local_name(root.tag)
 
     if tag == "sitemapindex":
-        child_count = sum(
-            1 for child in root
-            if re.sub(r"\{.*?\}", "", child.tag).lower() == "sitemap"
-        )
+        child_sitemaps = _extract_sitemap_locs(root, "sitemap")
+        child_count = len(child_sitemaps)
         return {
             "status": "pass" if child_count > 0 else "warn",
             "is_index": True,
             "url_count": child_count,
+            "urls": [],
+            "child_sitemaps": child_sitemaps,
             "detail": (
                 f"Sitemap index at {source_url} with {child_count} child sitemap(s)."
                 if child_count > 0
@@ -278,14 +384,14 @@ def _parse_sitemap_xml(content: str, source_url: str) -> dict:
         }
 
     if tag == "urlset":
-        url_count = sum(
-            1 for child in root
-            if re.sub(r"\{.*?\}", "", child.tag).lower() == "url"
-        )
+        urls = _extract_sitemap_locs(root, "url")
+        url_count = len(urls)
         return {
             "status": "pass" if url_count > 0 else "warn",
             "is_index": False,
             "url_count": url_count,
+            "urls": urls,
+            "child_sitemaps": [],
             "detail": (
                 f"Sitemap at {source_url} with {url_count} URL(s)."
                 if url_count > 0
@@ -314,6 +420,8 @@ def check_sitemap(
         "url_count": 0,
         "is_index": False,
         "checked_url": None,
+        "urls": [],
+        "child_sitemaps": [],
         "detail": "",
     }
 
@@ -337,7 +445,31 @@ def check_sitemap(
         result["status"] = parsed["status"]
         result["is_index"] = parsed.get("is_index", False)
         result["url_count"] = parsed.get("url_count", 0)
+        result["urls"] = parsed.get("urls", [])
+        result["child_sitemaps"] = parsed.get("child_sitemaps", [])
         result["detail"] = parsed["detail"]
+
+        if result["is_index"] and result["child_sitemaps"]:
+            collected_urls: list[str] = []
+            checked_children = result["child_sitemaps"][:_MAX_SITEMAP_CHILDREN]
+            for child_url in checked_children:
+                child_status, child_content, child_error = _safe_fetch(child_url, timeout)
+                if child_error or child_status != 200 or not child_content:
+                    continue
+                child_parsed = _parse_sitemap_xml(child_content, child_url)
+                if child_parsed.get("is_index"):
+                    continue
+                collected_urls.extend(child_parsed.get("urls", []))
+                if len(collected_urls) >= _MAX_INVENTORY_URLS:
+                    collected_urls = collected_urls[:_MAX_INVENTORY_URLS]
+                    break
+            if collected_urls:
+                result["urls"] = collected_urls
+                result["url_count"] = len(collected_urls)
+                result["detail"] = (
+                    f"Sitemap index at {candidate} with {len(result['child_sitemaps'])} child sitemap(s). "
+                    f"Sampled {len(collected_urls)} URL(s) from {len(checked_children)} child sitemap(s)."
+                )
         return result
 
     # None of the candidates were accessible
@@ -347,6 +479,186 @@ def check_sitemap(
         f"No accessible sitemap found. Checked: {checked}. "
         "Ensure a valid XML sitemap exists and is referenced in robots.txt."
     )
+    return result
+
+
+def _directory_for_url(url: str) -> str:
+    """Return the first-level directory for inventory grouping."""
+    path = urlparse(url).path or "/"
+    if path in ("", "/"):
+        return "/"
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return "/"
+    return f"/{parts[0]}/"
+
+
+def _classify_directory(directory: str) -> tuple[str, str, str]:
+    """Infer page type, SEO role, and next step from a URL directory."""
+    directory_lower = directory.lower()
+    rules = [
+        (("blog", "article", "post", "news", "story"), "Blog / Content Pages", "Informational keyword capture", "Audit representative articles for keyword targeting, schema, internal links, and content quality."),
+        (("tools", "tool"), "Tool Pages", "Utility-led search demand", "Run full audit on high-value tool pages and check indexability, intent match, and conversion paths."),
+        (("alternatives", "alternative", "compare", "comparison", "vs"), "Alternative / Competitor Pages", "Competitor and comparison keywords", "Audit representative comparison pages for differentiation, canonicalization, and conversion intent."),
+        (("templates", "template"), "Template Pages", "Template and downloadable asset demand", "Audit representative template pages for thin content, schema, preview quality, and internal links."),
+        (("use-cases", "use-case", "solutions", "solution"), "Use Case / Solution Pages", "Problem-aware and vertical intent", "Audit representative use case pages for intent match, proof, internal links, and CTA alignment."),
+        (("pricing", "plans"), "Pricing Pages", "Commercial evaluation intent", "Audit pricing pages for indexability, SERP snippet control, schema, and conversion clarity."),
+        (("docs", "documentation", "help", "support", "guide", "guides"), "Documentation / Support Pages", "Long-tail support and product education", "Audit docs pages for crawl depth, duplication, canonical tags, and internal search demand."),
+        (("product", "products", "features", "feature"), "Product / Feature Pages", "Product-led commercial intent", "Audit feature pages for keyword mapping, schema, internal links, and conversion paths."),
+    ]
+    for needles, page_type, seo_role, next_step in rules:
+        if any(needle in directory_lower for needle in needles):
+            return page_type, seo_role, next_step
+    return (
+        "Other Pages",
+        "Unclassified sitemap segment",
+        "Review sample URLs to decide whether this directory needs a deeper full audit.",
+    )
+
+
+def build_sitemap_inventory(sitemap_result: dict, top_n: int = 12) -> dict:
+    """Summarize sitemap URLs by first-level directory and inferred SEO page type."""
+    urls = sitemap_result.get("urls", []) or []
+    result: dict = {
+        "status": "info",
+        "total_urls": len(urls),
+        "directories": [],
+        "detail": "No sitemap URLs available for inventory.",
+    }
+    if not urls:
+        result["status"] = "warn" if sitemap_result.get("status") in ("pass", "warn") else "error"
+        return result
+
+    grouped: dict[str, dict] = {}
+    for url in urls:
+        directory = _directory_for_url(url)
+        bucket = grouped.setdefault(directory, {"path": directory, "url_count": 0, "sample_urls": []})
+        bucket["url_count"] += 1
+        if len(bucket["sample_urls"]) < 3:
+            bucket["sample_urls"].append(url)
+
+    directories = sorted(grouped.values(), key=lambda item: item["url_count"], reverse=True)[:top_n]
+    for item in directories:
+        page_type, seo_role, next_step = _classify_directory(item["path"])
+        item["page_type"] = page_type
+        item["seo_role"] = seo_role
+        item["recommended_next_step"] = next_step
+        item["example_url"] = item["sample_urls"][0] if item["sample_urls"] else None
+
+    result["directories"] = directories
+    result["detail"] = (
+        f"Sitemap contains {len(urls)} URL(s) across {len(grouped)} first-level directories. "
+        "Use this as a site-level map, then run full audit on representative sample URLs."
+    )
+    return result
+
+
+def _staging_candidates(origin: str) -> list[str]:
+    """Build common staging/test origins from the production origin."""
+    parsed = urlparse(origin)
+    hostname = parsed.hostname or ""
+    scheme = parsed.scheme or "https"
+
+    host_parts = hostname.split(".")
+    if len(host_parts) < 2:
+        return []
+
+    base_host = hostname
+    if host_parts[0] == "www" or host_parts[0] in _STAGING_PREFIXES:
+        base_host = ".".join(host_parts[1:])
+
+    candidates = []
+    for prefix in _STAGING_PREFIXES:
+        candidate_host = f"{prefix}.{base_host}"
+        if candidate_host != hostname:
+            candidates.append(f"{scheme}://{candidate_host}")
+    return candidates
+
+
+def check_staging_subdomains(origin: str, timeout: int) -> dict:
+    """
+    Check common staging/test subdomains for public duplicate indexation risk.
+    This is a public-signal check; it does not query Google site: results.
+    """
+    candidates = _staging_candidates(origin)
+    checked_hosts = [urlparse(candidate).hostname for candidate in candidates]
+    result: dict = {
+        "status": "pass",
+        "checked_hosts": checked_hosts,
+        "public_hosts": [],
+        "protected_hosts": [],
+        "redirected_hosts": [],
+        "similar_hosts": [],
+        "detail": "No public staging/test subdomain detected.",
+    }
+
+    production_status, production_html, production_error = _safe_fetch(origin, timeout)
+    production_available = production_status == 200 and bool(production_html) and not production_error
+
+    for candidate in candidates:
+        host = urlparse(candidate).hostname or candidate
+        status_code, content, error, location = _safe_fetch_no_redirect(candidate, timeout)
+
+        if error or status_code is None:
+            continue
+
+        if status_code in _PROTECTED_STATUS_CODES:
+            result["protected_hosts"].append(host)
+            continue
+
+        if 300 <= status_code < 400:
+            result["redirected_hosts"].append({"host": host, "location": location})
+            continue
+
+        if status_code not in _PUBLIC_STATUS_CODES:
+            continue
+
+        robots_status, robots_content, robots_error = _safe_fetch(f"{candidate}/robots.txt", timeout)
+        robots_blocked = (
+            robots_status == 200 and not robots_error and _robots_blocks_all(robots_content)
+        )
+        noindex = _html_has_noindex(content or "")
+        similarity = _content_similarity(production_html, content) if production_available else None
+
+        public_host = {
+            "host": host,
+            "status_code": status_code,
+            "robots_blocked": robots_blocked,
+            "noindex": noindex,
+            "similarity": similarity,
+        }
+        result["public_hosts"].append(public_host)
+
+        if robots_blocked or noindex:
+            result["protected_hosts"].append(host)
+            continue
+
+        if similarity is not None and similarity >= 0.82:
+            result["similar_hosts"].append(public_host)
+
+    if result["similar_hosts"]:
+        hosts = ", ".join(item["host"] for item in result["similar_hosts"])
+        result["status"] = "fail"
+        result["detail"] = (
+            f"Public staging/test subdomain mirrors production: {hosts}. "
+            "Protect staging with authentication or block crawlers with User-agent: * / Disallow: /."
+        )
+    else:
+        unprotected_public = [
+            item for item in result["public_hosts"]
+            if not item["robots_blocked"] and not item["noindex"]
+        ]
+        if unprotected_public:
+            hosts = ", ".join(item["host"] for item in unprotected_public)
+            result["status"] = "warn"
+            result["detail"] = (
+                f"Public staging/test subdomain detected but production similarity is unconfirmed: {hosts}. "
+                "Add authentication or explicit noindex/robots blocking if this is not a production site."
+            )
+        elif result["protected_hosts"]:
+            hosts = ", ".join(sorted(set(result["protected_hosts"])))
+            result["detail"] = f"Staging/test subdomain protected from indexing: {hosts}."
+
     return result
 
 
@@ -368,21 +680,26 @@ def main() -> None:
 
     origin = normalize_origin(args.url)
 
+    staging_result = check_staging_subdomains(origin, args.timeout)
     robots_result = check_robots(origin, args.timeout)
     sitemap_urls = robots_result.get("sitemap_directives", [])
     sitemap_result = check_sitemap(origin, args.timeout, sitemap_urls=sitemap_urls)
+    sitemap_inventory = build_sitemap_inventory(sitemap_result)
 
     output = {
         "origin": origin,
+        "staging_subdomains": staging_result,
         "robots": robots_result,
         "sitemap": sitemap_result,
+        "sitemap_inventory": sitemap_inventory,
     }
 
     print(json.dumps(output, indent=2, ensure_ascii=False))
 
     # Exit with code 1 if any check is fail or error — useful for CI integration
     has_failure = any(
-        r["status"] in ("fail", "error") for r in [robots_result, sitemap_result]
+        r["status"] in ("fail", "error")
+        for r in [staging_result, robots_result, sitemap_result]
     )
     sys.exit(1 if has_failure else 0)
 

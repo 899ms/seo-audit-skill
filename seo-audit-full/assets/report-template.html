@@ -391,6 +391,14 @@
     .check-table td:nth-child(2) { width: 5.5rem; white-space: nowrap; }
     .check-table th:nth-child(3),
     .check-table td:nth-child(3) { min-width: 8rem; }
+    .sitemap-inventory-table th:nth-child(1),
+    .sitemap-inventory-table td:nth-child(1) { width: 8rem; }
+    .sitemap-inventory-table th:nth-child(2),
+    .sitemap-inventory-table td:nth-child(2) { width: 6rem; white-space: nowrap; }
+    .sitemap-inventory-table th:nth-child(3),
+    .sitemap-inventory-table td:nth-child(3) { width: 12rem; }
+    .sitemap-inventory-table th:nth-child(4),
+    .sitemap-inventory-table td:nth-child(4) { min-width: 18rem; }
     .check-table tr:last-child td { border-bottom: none; }
     /* Detail cell: issue description + fix suggestion */
     .detail-issue {
@@ -492,6 +500,12 @@
       border-radius: 0 6px 6px 0;
     }
     .subsection-label:first-child { margin-top: 0; }
+    .inventory-note {
+      margin: 10px 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
 
     /* ── Limitations ── */
 
@@ -659,6 +673,8 @@
       {{pagespeed_checks_html}}
       <!--
         Expected format for pagespeed_checks_html:
+        - PageSpeed is required for seo-audit-full.
+        - If no PageSpeed API key is configured, stop before rendering the full report and ask the user to set PAGESPEED_API_KEY, GOOGLE_PAGESPEED_API_KEY, or pass --api-key.
 
         <div class="pagespeed-overview">
           <div class="pagespeed-panel">
@@ -749,19 +765,74 @@
     <h2>Site Checks</h2>
     <div class="section-body">
 
-      <!-- Crawlability + Canonicalization + i18n + Schema -->
+      <!-- Sitemap Inventory + Crawlability + Canonicalization + i18n + Schema -->
       {{site_checks_html}}
       <!--
         Use <div class="subsection-label">Label</div> to separate check groups.
-        Labels: Crawlability · URL Canonicalization · i18n / hreflang · Schema (JSON-LD)
+        Labels: Sitemap URL Inventory · Crawlability · URL Canonicalization · i18n / hreflang · Schema (JSON-LD)
         Pass rows: ONE short phrase. No divs.
         Warn / Fail rows: <div class="detail-issue"> ≤2 points + <div class="detail-fix">.
 
+        <div class="subsection-label">Sitemap URL Inventory</div>
+        <table class="check-table sitemap-inventory-table">
+          <thead>
+            <tr><th>Directory</th><th>URL Count</th><th>Page Type</th><th>Example Page</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>/blog/</td>
+              <td>300</td>
+              <td>Blog / Content Pages</td>
+              <td>https://xx.ai/blog/best-ai-video-tools</td>
+            </tr>
+            <tr>
+              <td>/tools/</td>
+              <td>80</td>
+              <td>Tool Pages</td>
+              <td>https://xx.ai/tools/image-generator</td>
+            </tr>
+            <tr>
+              <td>/alternatives/</td>
+              <td>40</td>
+              <td>Alternative / Competitor Pages</td>
+              <td>https://xx.ai/alternatives/synthesia</td>
+            </tr>
+            <tr>
+              <td>/templates/</td>
+              <td>65</td>
+              <td>Template Pages</td>
+              <td>https://xx.ai/templates/tiktok-video</td>
+            </tr>
+            <tr>
+              <td>/use-cases/</td>
+              <td>25</td>
+              <td>Use Case / Solution Pages</td>
+              <td>https://xx.ai/use-cases/ecommerce</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="inventory-note">This sitemap inventory is a site-level map, not a full page audit. Continue with deeper full audits by selecting one representative URL from each important directory.</p>
+
+        <div class="subsection-label">Crawlability</div>
         <table class="check-table">
           <thead>
             <tr><th>Check</th><th>Status</th><th>Detail</th></tr>
           </thead>
           <tbody>
+            <tr>
+              <td>Staging Subdomain Indexation</td>
+              <td><span class="status status-pass">Pass</span></td>
+              <td>No public staging/test subdomain detected, or staging is protected from crawler access.</td>
+            </tr>
+            <tr>
+              <td>Staging Subdomain Indexation</td>
+              <td><span class="status status-fail">Fail</span></td>
+              <td>
+                <div class="detail-issue">· test.example.com is publicly accessible and appears to mirror the production site.</div>
+                <div class="detail-issue">· Indexed staging pages can compete with production URLs and split ranking signals.</div>
+                <div class="detail-fix">Protect staging with authentication, or block crawlers in staging robots.txt: User-agent: * / Disallow: /</div>
+              </td>
+            </tr>
             <tr>
               <td>robots.txt</td>
               <td><span class="status status-pass">Pass</span></td>
@@ -772,6 +843,14 @@
               <td><span class="status status-pass">Pass</span></td>
               <td>Valid XML urlset · 104 URLs · referenced in robots.txt.</td>
             </tr>
+          </tbody>
+        </table>
+
+        <table class="check-table">
+          <thead>
+            <tr><th>Check</th><th>Status</th><th>Detail</th></tr>
+          </thead>
+          <tbody>
             <tr>
               <td>robots.txt</td>
               <td><span class="status status-warn">Warning</span></td>
@@ -1091,22 +1170,23 @@
             <tr>
               <td>Schema (JSON-LD)</td>
               <td><span class="status status-pass">Pass</span></td>
-              <td>BlogPosting detected · required fields present (headline, datePublished, author) · no conflicts.</td>
+              <td>BlogPosting detected · required fields present · localized schema matches page language.</td>
             </tr>
             <tr>
               <td>Schema (JSON-LD)</td>
               <td><span class="status status-warn">Warning</span></td>
               <td>
-                <div class="detail-issue">· BlogPosting present but missing "author.url" and "dateModified" — reduces rich result eligibility.</div>
-                <div class="detail-fix">Add author.url (person/org profile page) and dateModified to the JSON-LD block.</div>
+                <div class="detail-issue">· BlogPosting present but missing recommended fields: dateModified, publisher, and mainEntityOfPage.</div>
+                <div class="detail-fix">Add recommended rich-result fields and validate the JSON-LD with Google's Rich Results Test.</div>
               </td>
             </tr>
             <tr>
               <td>Schema (JSON-LD)</td>
               <td><span class="status status-fail">Fail</span></td>
               <td>
-                <div class="detail-issue">· Article page — no JSON-LD found.</div>
-                <div class="detail-fix">Add BlogPosting JSON-LD: headline, datePublished, author, image.</div>
+                <div class="detail-issue">· Schema fields are missing or misconfigured, so Google may ignore the structured data.</div>
+                <div class="detail-issue">· Localized pages reuse schema from another language instead of matching inLanguage, URL, and page content.</div>
+                <div class="detail-fix">Fix required fields and generate language-specific JSON-LD for each localized URL.</div>
               </td>
             </tr>
             <tr>
@@ -1152,7 +1232,12 @@
            - FAQPage             : mainEntity[].name + acceptedAnswer.text
            - WebSite             : name, url
            - Organization        : name, url, logo
-        4. Flag conflicts: multiple @type blocks claiming different primary types
+        4. Flag malformed JSON-LD, misspelled/missing schema properties, incomplete nested fields, and conflicts
+        5. For multilingual pages, validate localized schema:
+           - inLanguage should match html[lang]
+           - url / mainEntityOfPage should match the current canonical URL
+           - headline / description should be in the current page language when present
+           - Each localized URL should generate its own language-specific JSON-LD
       -->
     </div>
   </section>
