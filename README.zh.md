@@ -15,13 +15,15 @@
 
 ## 报告产出
 
-每次审计生成独立 HTML 报告，保存至 `reports/<hostname>-audit.html`。
+Basic 审计生成独立 HTML 报告，保存至 `reports/<hostname>-audit.html`。
+Full 审计保存至 `reports/<hostname>-full-audit.html`。
 
 | 报告章节 | 内容 |
 |---|---|
 | **Audit Summary** | 一句话总结 + 关键问题 / 警告 / 通过项一览 |
-| **Site Checks** | 可抓取性 · URL 规范化 · i18n · Schema · E-E-A-T |
-| **Page Checks** | TDK · H1 · 标题层级 · 字数 · 内链 |
+| **Site Checks** | Sitemap URL Inventory · 可抓取性 · URL 规范化 · i18n · Schema · E-E-A-T |
+| **Page Speed** | Full only — Lighthouse 分数、实验室指标、最终 URL、截图可用性 |
+| **Page Checks** | TDK · H1 · 标题层级 · 字数 · 内链 · 社交标签 |
 | **Priority Actions** | 影响最大的 3 项修复，按优先级排序 |
 | **Insight Walkthrough** | 每个重要发现的 Evidence → Impact → Fix |
 
@@ -46,9 +48,9 @@ URL
 │  Layer 1 · Python 脚本                            │
 │  确定性检查 → 结构化 JSON                          │
 │                                                  │
-│  check-site.py      robots.txt、sitemap (RFC 9309)│
+│  check-site.py      sitemap 目录盘点、测试子域名、robots │
 │  check-page.py      H1 / title / meta / canonical│
-│  check-schema.py    JSON-LD @type + 字段校验       │
+│  check-schema.py    JSON-LD 字段 + 多语言对齐校验   │
 │  fetch-page.py      原始 HTML + SSRF 防护          │
 └───────────────────────┬──────────────────────────┘
                         │ JSON + llm_review_required 标志
@@ -78,7 +80,9 @@ URL
 | Skill | 层级 | 适用场景 |
 |---|---|---|
 | `seo-audit` | Basic | 默认入口 — 给一个 URL，输出结构化首轮检查 |
-| `seo-audit-full` | Full | 深度审计：Core Web Vitals、内容质量评分、GSC 数据、竞品差距分析 |
+| `seo-audit-full` | Full | 深度审计：PageSpeed、Sitemap 页面资产盘点、社交标签、内容质量评分、GSC 数据、竞品差距分析 |
+
+> `seo-audit-full` 的 PageSpeed 检查必须配置 Google PageSpeed Insights API key。可以设置 `PAGESPEED_API_KEY` / `GOOGLE_PAGESPEED_API_KEY`，或通过 `--api-key` 传入；没有 key 时，full audit 会停止并提示先配置。
 
 ---
 
@@ -88,15 +92,27 @@ URL
 
 | 检查项 | 检查内容 | Basic | Full |
 |---|---|:---:|:---:|
+| Sitemap URL Inventory | 独立表格展示 sitemap 里的主要目录：URL 数量、页面类型、代表性示例 URL | — | ✅ |
+| 测试子域名收录风险 | 检测公开的 `test.`、`staging.`、`dev.`、`preview.`、`beta.`、`uat.` 是否镜像正式站并可能被索引 | — | ✅ |
 | robots.txt | RFC 9309 指令组解析、Allow/Disallow 逻辑、Googlebot 状态、Sitemap 指令 | ✅ | ✅ |
-| sitemap.xml | 有效 XML、URL 数量、追踪 robots.txt 声明的 Sitemap 路径 | ✅ | ✅ |
+| sitemap.xml | 有效 XML、URL 数量、追踪 robots.txt 声明的 Sitemap 路径，必要时抽样展开子 sitemap | ✅ | ✅ |
 | 404 处理 | 真 404 vs 软 404（200）vs 跳转首页（301） | ✅ | ✅ |
 | URL 规范化 | HTTP→HTTPS 重定向、www 一致性、尾斜杠、Canonical 标签匹配 | ✅ | ✅ |
-| i18n / hreflang | 互相引用对称、BCP 47 语言码、x-default、URL 路径结构 | ✅ | ✅ |
-| Schema（JSON-LD） | @type 检测、必填字段校验、@graph 展平、类型冲突检查 | ✅ | ✅ |
+| i18n / hreflang | 互相引用对称、BCP 47 语言码、x-default、默认语言 URL 重复、canonical/hreflang 对齐 | ✅ | ✅ |
+| Schema（JSON-LD） | JSON 可解析性、@type、必填/推荐字段、嵌套字段、类型冲突、多语言 schema 的语言和 URL 对齐 | ✅ | ✅ |
 | E-E-A-T 信任页面 | About / Contact / Privacy / Terms — 页面存在（HTTP 200）+ footer/nav 可达 | ✅ | ✅ |
 | GSC 抓取状态 | 索引覆盖、抓取错误、被屏蔽资源 | — | ✅ |
-| Core Web Vitals | CrUX 字段数据：LCP、CLS、INP | — | ✅ |
+| PageSpeed / Lighthouse | Performance · Accessibility · Best Practices · SEO 分数、实验室指标、最终 URL、截图可用性 | — | ✅ |
+
+`Sitemap URL Inventory` 会在 Site Checks 里作为独立表格展示，位置在 Crawlability 之前：
+
+| 目录 | URL 数量 | 页面类型判断 | 示例页面 |
+|---|---:|---|---|
+| `/blog/` | 300 | Blog / 内容页 | `https://xx.ai/blog/best-ai-video-tools` |
+| `/tools/` | 80 | 工具页 | `https://xx.ai/tools/image-generator` |
+| `/alternatives/` | 40 | 竞品替代页 | `https://xx.ai/alternatives/synthesia` |
+
+它是站点级页面资产地图，不是单页 full audit 结论；后续可以从重要目录各选一个代表 URL 继续深度审计。
 
 ### 页面级检查
 
@@ -136,7 +152,10 @@ seo-audit-skill/
     ├── references/REFERENCE.md
     ├── assets/report-template.html
     └── scripts/
-        └── check-social.py            # OG + Twitter Card 校验 → JSON
+        ├── check-site.py              # 测试子域名 + sitemap inventory + robots/sitemap → JSON
+        ├── check-pagespeed.py         # PageSpeed Insights / Lighthouse → JSON
+        ├── check-social.py            # OG + Twitter Card 校验 → JSON
+        └── check-schema.py            # JSON-LD 质量 + 多语言 schema 校验 → JSON
 ```
 
 ---
@@ -178,10 +197,12 @@ deep audit: https://example.com
 
 | 脚本 | 功能 |
 |---|---|
-| `check-site.py` | robots.txt + sitemap — RFC 9309 指令组解析、Allow 覆盖、多 Sitemap 路径追踪 |
+| `check-site.py` | robots.txt + sitemap + sitemap inventory — RFC 9309 解析、测试子域名检测、主要目录聚合 |
 | `check-page.py` | H1 / title / meta / canonical / URL slug — 停用词感知的关键词匹配 |
-| `check-schema.py` | JSON-LD 提取、@graph 展平、@type + 必填字段校验 |
+| `check-schema.py` | JSON-LD 提取、@graph 展平、@type + 必填字段校验、多语言 schema 对齐 |
 | `fetch-page.py` | 原始 HTML 抓取 — SSRF 防护、重定向链追踪、Googlebot UA 选项 |
+| `check-pagespeed.py` | Full only — PageSpeed Insights / Lighthouse 分数和实验室指标；必须配置 API key |
+| `check-social.py` | Full only — OG 标签 + Twitter Card 校验 |
 
 **依赖：** `pip install requests`
 

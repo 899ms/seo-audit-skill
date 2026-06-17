@@ -15,13 +15,15 @@ Built on a **Script + LLM two-layer architecture**: Python scripts handle determ
 
 ## Report Output
 
-Each audit produces a standalone HTML report saved to `reports/<hostname>-audit.html`.
+Each basic audit produces a standalone HTML report saved to `reports/<hostname>-audit.html`.
+Full audits save to `reports/<hostname>-full-audit.html`.
 
 | Section | What you get |
 |---|---|
 | **Audit Summary** | One-line verdict + critical / warnings / passing at a glance |
-| **Site Checks** | Crawlability · URL Canonicalization · i18n · Schema · E-E-A-T |
-| **Page Checks** | PageSpeed · TDK · H1 · Headings · Word Count · Internal Links |
+| **Site Checks** | Sitemap URL Inventory · Crawlability · URL Canonicalization · i18n · Schema · E-E-A-T |
+| **Page Speed** | Full only — Lighthouse scores, lab metrics, final URL, screenshot availability |
+| **Page Checks** | TDK · H1 · Headings · Word Count · Internal Links · Social Tags |
 | **Priority Actions** | Top 3 highest-impact fixes, ranked |
 | **Insight Walkthrough** | Evidence → Impact → Fix for each major finding |
 
@@ -41,7 +43,9 @@ audit this page: https://openclaw.ai
 | Skill | Tier | When to use |
 |---|---|---|
 | `seo-audit` | Basic | Default — give it a URL, get a 20+ check structured report |
-| `seo-audit-full` | Full | Deep: Core Web Vitals, content quality, GSC data, competitor gap |
+| `seo-audit-full` | Full | Deep audit with PageSpeed, sitemap inventory, social tags, content quality, GSC data, competitor gap |
+
+> `seo-audit-full` requires a Google PageSpeed Insights API key for PageSpeed checks. Set `PAGESPEED_API_KEY` / `GOOGLE_PAGESPEED_API_KEY`, or pass `--api-key`; without a key, the full audit stops and asks you to configure one.
 
 ---
 
@@ -51,15 +55,27 @@ audit this page: https://openclaw.ai
 
 | Check | What it verifies | Basic | Full |
 |---|---|:---:|:---:|
+| Sitemap URL Inventory | Standalone table of top sitemap directories: URL count, page type, representative example URL | — | ✅ |
+| Staging Subdomain Indexation | Detects public `test.`, `staging.`, `dev.`, `preview.`, `beta.`, `uat.` hosts that mirror production and may be indexable | — | ✅ |
 | robots.txt | RFC 9309 group parsing, Allow/Disallow logic, Googlebot status, Sitemap directives | ✅ | ✅ |
-| sitemap.xml | Valid XML, URL count, follows Sitemap directive path from robots.txt | ✅ | ✅ |
+| sitemap.xml | Valid XML, URL count, follows Sitemap directive path from robots.txt, samples child sitemap URLs when needed | ✅ | ✅ |
 | 404 Handling | True 404 vs soft 404 (200) vs redirect-to-homepage (301) | ✅ | ✅ |
 | URL Canonicalization | HTTP→HTTPS redirect, www consistency, trailing slash, canonical tag match | ✅ | ✅ |
-| i18n / hreflang | Reciprocal symmetry, BCP 47 codes, x-default, URL path structure | ✅ | ✅ |
-| Schema (JSON-LD) | @type detection, required fields, @graph flattening, type conflict check | ✅ | ✅ |
+| i18n / hreflang | Reciprocal symmetry, BCP 47 codes, x-default, default-language URL duplication, canonical/hreflang alignment | ✅ | ✅ |
+| Schema (JSON-LD) | Parseability, @type detection, required/recommended fields, nested fields, type conflicts, localized schema language/URL alignment | ✅ | ✅ |
 | E-E-A-T Trust Pages | About / Contact / Privacy / Terms — exists (HTTP 200) + reachable from footer/nav | ✅ | ✅ |
 | GSC Crawl Status | Index coverage, crawl errors, blocked resources | — | ✅ |
-| Core Web Vitals | LCP, CLS, INP from CrUX field data | — | ✅ |
+| PageSpeed / Lighthouse | Performance · Accessibility · Best Practices · SEO scores, lab metrics, final URL, screenshot availability | — | ✅ |
+
+`Sitemap URL Inventory` is intentionally rendered as its own table before Crawlability:
+
+| Directory | URL Count | Page Type | Example Page |
+|---|---:|---|---|
+| `/blog/` | 300 | Blog / Content Pages | `https://xx.ai/blog/best-ai-video-tools` |
+| `/tools/` | 80 | Tool Pages | `https://xx.ai/tools/image-generator` |
+| `/alternatives/` | 40 | Alternative / Competitor Pages | `https://xx.ai/alternatives/synthesia` |
+
+Use it as a site-level map, then choose representative URLs from important directories for deeper full audits.
 
 ### Page-level
 
@@ -99,7 +115,10 @@ seo-audit-skill/
     ├── references/REFERENCE.md
     ├── assets/report-template.html
     └── scripts/
-        └── check-social.py            # OG + Twitter Card validation → JSON
+        ├── check-site.py              # staging + sitemap inventory + robots/sitemap → JSON
+        ├── check-pagespeed.py         # PageSpeed Insights / Lighthouse → JSON
+        ├── check-social.py            # OG + Twitter Card validation → JSON
+        └── check-schema.py            # JSON-LD quality + localized schema validation → JSON
 ```
 
 ---
@@ -114,9 +133,9 @@ URL
 │  Layer 1 · Python Scripts                        │
 │  Deterministic checks → structured JSON          │
 │                                                  │
-│  check-site.py      robots.txt, sitemap (RFC 9309)
+│  check-site.py      sitemap inventory, staging   │
 │  check-page.py      H1 / title / meta / canonical│
-│  check-schema.py    JSON-LD @type + field valid. │
+│  check-schema.py    JSON-LD fields + localization│
 │  fetch-page.py      raw HTML + SSRF protection   │
 └───────────────────────┬──────────────────────────┘
                         │ JSON + llm_review_required flag
@@ -174,10 +193,12 @@ All scripts output structured JSON to stdout. Exit code `0` = pass/warn, `1` = a
 
 | Script | What it does |
 |---|---|
-| `check-site.py` | robots.txt + sitemap — RFC 9309 group parsing, Allow override, multi-Sitemap path |
+| `check-site.py` | robots.txt + sitemap + sitemap inventory — RFC 9309 parsing, staging subdomain checks, top directory grouping |
 | `check-page.py` | H1 / title / meta / canonical / URL slug — keyword match with stop-word-aware filter |
-| `check-schema.py` | JSON-LD extraction, @graph flattening, @type + required field validation |
+| `check-schema.py` | JSON-LD extraction, @graph flattening, @type + required field validation, localized schema alignment |
 | `fetch-page.py` | Raw HTML fetch — SSRF protection, redirect chain tracking, Googlebot UA option |
+| `check-pagespeed.py` | Full only — PageSpeed Insights / Lighthouse scores and lab metrics; requires API key |
+| `check-social.py` | Full only — OG tags + Twitter Card validation |
 
 **Dependency:** `pip install requests`
 
